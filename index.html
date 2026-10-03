@@ -923,7 +923,28 @@ else if (typeof exports === 'object')
     /^[\(\[]?\s*[eE]\s*[\)\]\.:;]\s*(.*)$/,
     /^[\(\[]?\s*[fF]\s*[\)\]\.:;]\s*(.*)$/
   ];
+  // czy odczytana litera jest „dosłowna" dla danej etykiety (nie z klasy
+  // pomyłek OCR jak e/o->c, h->b, @->a) — służy do rozstrzygania, czy
+  // wierzyć etykiecie, czy pozycji wpisu
+  var LIT = [
+    /^[\(\[]?\s*[aA]/,
+    /^[\(\[]?\s*[bB]/,
+    /^[\(\[]?\s*[cC]/,
+    /^[\(\[]?\s*(?:[dD]|cl|Cl)/,
+    /^[\(\[]?\s*[eE]/,
+    /^[\(\[]?\s*[fF]/
+  ];
   var NUM_RE = /^[lI|]?\s*(\d{1,3})\s?[.)\]]\s*(.*)$/;
+
+  // czyszczenie linii z ozdobników druku (kratki, stemple, prefiksy) zanim
+  // trafią do reguł struktury; ucięcie tylko gdy reszta linii na pewno
+  // pasuje do wzorca numeru/etykiety — zwykły tekst zostaje nietknięty
+  var QPREFIX = /^(?:pytanie|zadanie)[\s.:]*(?=\d{1,3}\s?[.)\]])/i;
+  var JUNK_LAB = /^(?:[^\w]{1,4}\s*|[oO0uUlLjJcCdDxX]{1,2}\s+)(?=[a-fA-F]\s*[)\].:;])/;
+  var JUNK_NUM = /^[^\w]{1,4}\s*(?=\d{1,3}\s?[.)\]])/;
+  function cleanLine(l) {
+    return l.replace(QPREFIX, '').replace(JUNK_LAB, '').replace(JUNK_NUM, '');
+  }
 
   function joinText(a, b) {
     if (!a) return b;
@@ -935,19 +956,29 @@ else if (typeof exports === 'object')
 
   // "osierocona" etykieta: zniekształcony znak odpowiedzi na początku linii
   // np. "« tekst", "KT tekst", "s. tekst", "4 tekst" — zamiast "a."/"c."/"d."
+  // Zwraca { l, text, strong }: l = litera, gdy w treści widać prawdziwą
+  // etykietę („[O a) x"); strong = wpis na pewno jest odpowiedzią (etykieta
+  // w treści albo token zlepiony z nią: „Fe)", „Cb)").
   function orphanLabelText(line) {
     var m = /^([^\s]{1,3})[\s.)\]:;\-–—]+(.*)$/.exec(line);
     if (!m || !m[2] || m[2].length < 4) return null;
     var t = m[1];
     if (NUM_RE.test(line)) return null;                           // liczba = reguła numerów
+    // w treści widać prawdziwą etykietę -> token jest ozdobnikiem (kratka, stempel)
+    var l = -1;
+    for (var k = 0; k < 6; k++) {
+      if (LABEL[k].test(m[2])) { l = k; break; }
+    }
+    var mangled = /^.{1,3}[)\]:;]$/.test(t);                      // etykieta zlepiona ze znakiem: „Fe)", „Cb)"
     // token musi mieć czystą "etykietową" postać — mieszane śmieci jak "5ię" to kontynuacja
-    var labelLike = /^[^\w\s]{1,3}$/.test(t)        // czyste symbole: « © € » …
+    var labelLike = mangled
+      || /^[^\w\s]{1,3}$/.test(t)        // czyste symbole: « © € » …
       || /^[A-ZĄĆĘŁŃÓŚŹŻ]{2,3}$/.test(t)            // wielkie litery: KT, LI, PS
       || /^[A-Za-z]$/.test(t)                       // pojedyncza litera: s, c, e
       || /^\d$/.test(t);                            // pojedyncza cyfra: 4, 5, 8
-    if (!labelLike) return null;
-    if (/^[aiouwzAIUOWZ]$/.test(t)) return null;                  // jednoliterowe polskie wyrazy
-    return m[2];
+    if (l < 0 && !labelLike) return null;
+    if (l < 0 && /^[aiouwzAIUOWZ]$/.test(t)) return null;         // jednoliterowe polskie wyrazy
+    return { l: l, text: m[2], strong: l >= 0 || mangled };
   }
 
   function parseOcr(text) {
@@ -955,7 +986,13 @@ else if (typeof exports === 'object')
       .replace(/\r/g, '')
       .split('\n')
       .map(function (l) { return l.replace(/\s+/g, ' ').trim(); })
-      .filter(function (l) { return l.length > 0; });
+      .map(cleanLine)
+      .filter(function (l) {
+        // linie bez tekstu (pieczątki, grafiki, pola „……") odrzucamy;
+        // krótkie etykiety typu „a)" zostają
+        var alnum = (l.match(/[0-9a-ząćęłńóśźż]/gi) || []).length;
+        return alnum > 0 && (l.length <= 5 || alnum / l.length >= 0.3);
+      });
 
     var blocks = [];
     var cur = null;
@@ -1052,21 +1089,33 @@ else if (typeof exports === 'object')
           startBlock(null, pending.slice(-3).join(' '), false);
           matchedLabel = 0;
           labelText = m0[1];
+        } else {
+          // blok bez numeru: pierwsza odpowiedź ze zniekształconą etykietą
+          // („☐ a) …") — tylko gdy widać, że to na pewno odpowiedź
+          var o0 = orphanLabelText(line);
+          if (o0 && o0.strong) {
+            startBlock(null, pending.slice(-3).join(' '), false);
+            cur.entries.push({ l: -1, t: o0.text });
+            cur.nextK++;
+            continue;
+          }
         }
       }
 
       if (matchedLabel >= 0) {
-        cur.entries.push({ l: matchedLabel, t: labelText });
+        cur.entries.push({ l: matchedLabel, t: labelText, strict: LIT[matchedLabel].test(line) ? 1 : 0 });
         if (matchedLabel + 1 > cur.nextK) cur.nextK = matchedLabel + 1;
         continue;
       }
 
-      // 3) odpowiedź ze zniekształconą etykietą — tylko w strefie odpowiedzi;
-      //    w strefie pytania zawinięty wiersz z "śmieciowym" początkiem to kontynuacja
-      if (cur && cur.entries.length > 0) {
+      // 3) odpowiedź ze zniekształconą etykietą — w strefie odpowiedzi zawsze;
+      //    w strefie pytania (ustalonej, >=12 znaków) też — śmieciowy wpis
+      //    i tak dostanie ostatni wolny slot i matcher może go zostawić bez pary;
+      //    zawinięty wiersz bez "etykietowego" początku to nadal kontynuacja
+      if (cur && (cur.entries.length > 0 || cur.question.length >= 12)) {
         var ot = orphanLabelText(line);
         if (ot != null) {
-          cur.entries.push({ l: -1, t: ot });
+          cur.entries.push({ l: -1, t: ot.text });
           cur.nextK++;
           continue;
         }
@@ -1086,6 +1135,23 @@ else if (typeof exports === 'object')
     // przypisanie wpisów do liter: oznaczone dostają swoją pozycję,
     // osierocone wypełniają wolne miejsca po kolejności
     blocks.forEach(function (b) {
+      var hasOrphan = b.entries.some(function (e) { return e.l < 0; });
+      var seen = {};
+      for (var ei = 0; ei < b.entries.length; ei++) {
+        var e = b.entries[ei];
+        if (e.l < 0) {
+          // treść zaczyna się od prawdziwej etykiety („[O a) x" -> „a) x") -> jej litera
+          for (var k = 0; k < 6; k++) {
+            var im = LABEL[k].exec(e.t);
+            if (im) { e.strict = LIT[k].test(e.t) ? 1 : 0; e.l = k; e.t = im[1]; break; }
+          }
+        }
+        // zdublowana litera, litera „z klasy pomyłek" niezgodna z pozycją
+        // albo litera rozjechana z pozycją o >=2 -> pozycja po kolejności
+        if (e.l >= 0 && (seen[e.l] || (e.l - ei >= 2 && (hasOrphan || !e.strict)) ||
+            (hasOrphan && !e.strict && e.l !== ei))) e.l = -1;
+        if (e.l >= 0) seen[e.l] = true;
+      }
       var taken = {};
       b.entries.forEach(function (e) { if (e.l >= 0) taken[e.l] = true; });
       var prev = -1;
@@ -1181,6 +1247,14 @@ else if (typeof exports === 'object')
     } else if (missing.length === 1 && optSim < 0.85) {
       // dopasowanie słabe, a jednej opcji brakuje – możliwe, że poprawna jest brakująca
       if (optSim < 0.7) { letterIdx = missing[0]; optSim = 0.5; }
+      inferred = true;
+    }
+    // litera poza liczbą odpowiedzi w pytaniu z bazy (etykieta zniekształcona
+    // w OCR, np. „d)" przeczytane jako „e)") -> pozycja wpisu po kolejności
+    if (letterIdx >= item.a.length) {
+      var cnt = 0;
+      for (var si = 0; si < letterIdx; si++) if (pas[si].s) cnt++;
+      letterIdx = cnt;
       inferred = true;
     }
     return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, inferred: inferred };
