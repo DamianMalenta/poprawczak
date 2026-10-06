@@ -6,6 +6,8 @@
 <meta name="theme-color" content="#1f5c3a">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-touch-fullscreen" content="yes">
 <meta name="apple-mobile-web-app-title" content="Poprawczak">
 <link rel="apple-touch-icon" href="icons/poprawczak-180.png">
 <link rel="manifest" href="poprawczak.webmanifest">
@@ -28,8 +30,8 @@
   .small { flex: 0 0 56px; padding: 14px 0; font-size: 20px; }
   canvas#preview { width:100%; max-height: 50vh; object-fit: contain; background:#ddd; border-radius:10px; display:none; }
   progress { width:100%; height: 14px; display:none; }
-  #answers { display:grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap:6px; margin: 8px 0; }
-  .ans { background:#fff; border-radius:10px; padding:10px 6px; text-align:center; font-size:24px; font-weight:700;
+  #answers { display:grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap:8px; margin: 8px 0; }
+  .ans { background:#fff; border-radius:12px; padding:14px 6px; text-align:center; font-size:30px; font-weight:800;
          font-variant-numeric: tabular-nums; border:2px solid var(--g2); }
   .ans.low { border-color: var(--warn); color: var(--warn); background:#fff6e8; }
   .ans.none { border-color: var(--bad); color: var(--bad); background:#fdecea; }
@@ -46,15 +48,13 @@
   input[type=search], input[type=text], input[type=password] { width:100%; padding:12px; font-size:16px; border-radius:10px; border:2px solid #bbb; }
   select { width:100%; padding:12px; font-size:16px; border-radius:10px; border:2px solid var(--g); background:#fff; }
   .hint { font-size:12px; color:#555; }
-  /* okno instalacji PWA */
-  #install-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
-                      align-items:center; justify-content:center; padding:20px; z-index:99; }
-  #install-card { background:#fff; border-radius:16px; padding:22px 18px; max-width:340px; width:100%;
-                  text-align:center; box-shadow:0 10px 40px rgba(0,0,0,.35); }
-  #install-card h2 { margin:8px 0 4px; font-size:24px; }
-  #install-card p { margin:6px 0 14px; font-size:14px; color:#333; }
-  #install-how { display:none; text-align:left; background:var(--bg); border-radius:10px;
-                 padding:10px 12px; font-size:13px; margin-top:10px; }
+  /* baner instalacji PWA (nieblokujący) */
+  #install-banner { position:fixed; left:0; right:0; bottom:0; z-index:99; background:#fff;
+                    border-top:2px solid var(--g); padding:12px; display:flex; gap:8px;
+                    align-items:center; justify-content:center; font-size:15px; flex-wrap:wrap;
+                    box-shadow:0 -4px 16px rgba(0,0,0,.12); }
+  #install-banner[hidden] { display:none; }
+  #install-banner .btn { flex:0 1 auto; padding:10px 14px; }
   /* import / podgląd testu */
   .qcard { background:#fff; border-radius:10px; padding:8px 10px; margin:8px 0; border:1px solid #e0e0e0; }
   .qcard.warn { border-color: var(--warn); background:#fffaf1; }
@@ -73,16 +73,6 @@
   <p class="muted" id="status">Start…</p>
 
   <div id="main">
-    <section id="tests">
-      <div class="muted" style="margin-bottom:4px">Który test rozwiązujesz?</div>
-      <div class="row" style="align-items:stretch">
-        <select id="testSel" style="flex:1 1 200px"></select>
-        <button class="btn small" id="tRename" title="Zmień nazwę testu">✎</button>
-        <button class="btn small" id="tDelete" title="Usuń test">🗑</button>
-      </div>
-      <label class="btn" style="display:block">＋ Dodaj test z PDF<input id="pdfFile" type="file" accept=".pdf,application/pdf" hidden></label>
-    </section>
-
     <div class="row">
       <label class="btn primary">📷 Zrób zdjęcie<input id="cam" type="file" accept="image/*" capture="environment" hidden></label>
       <label class="btn">🖼 Z galerii (jedno lub kilka)<input id="gal" type="file" accept="image/*" multiple hidden></label>
@@ -92,11 +82,12 @@
     <div class="row" id="tools" style="display:none">
       <button class="btn small" id="rotL" title="Obróć w lewo">⟲</button>
       <button class="btn small" id="rotR" title="Obróć w prawo">⟳</button>
-      <button class="btn primary" id="go">Rozpoznaj odpowiedzi</button>
+      <button class="btn primary" id="go">Ponów rozpoznanie</button>
     </div>
     <progress id="prog" max="1" value="0"></progress>
 
     <section id="out" style="display:none">
+      <p id="summary" style="font-size:15px;font-weight:600;color:var(--g)"></p>
       <div id="answers"></div>
       <div class="row">
         <button class="btn" id="copy">📋 Kopiuj odpowiedzi</button>
@@ -120,75 +111,8 @@
     <p class="hint">Aplikacja działa w całości offline – zdjęcia i pliki nie są nigdzie wysyłane.</p>
   </div>
 
-  <!-- ====== ekran importu testu z PDF ====== -->
-  <div id="import" hidden>
-    <h2>Nowy test z PDF</h2>
-    <div id="impPick">
-      <label class="btn primary" style="display:block">Wybierz plik PDF<input id="pdfFile2" type="file" accept=".pdf,application/pdf" hidden></label>
-      <div class="row"><button class="btn" id="impCancel">Anuluj</button></div>
-    </div>
-    <div id="impPassWrap" hidden>
-      <p class="muted" id="impPassMsg">PDF jest zabezpieczony hasłem.</p>
-      <div class="row">
-        <input type="password" id="impPass" placeholder="Hasło do PDF" style="flex:1 1 180px">
-        <button class="btn" id="impPassGo" style="flex:0 1 120px">Odblokuj</button>
-      </div>
-    </div>
-    <progress id="impProg" max="1" value="0" style="display:none"></progress>
-    <p class="muted" id="impStatus"></p>
-
-    <div id="impPreview" hidden>
-      <div class="row">
-        <input type="text" id="impName" placeholder="Nazwa testu" style="flex:1 1 200px">
-      </div>
-      <div class="row">
-        <select id="impStrat" title="Sposób oznaczenia poprawnych odpowiedzi" style="flex:1 1 200px"></select>
-      </div>
-      <p class="hint" id="impStratHint"></p>
-      <p class="hint" id="impWarn" style="color:var(--warn); font-weight:600"></p>
-      <div id="impList"></div>
-      <div class="row">
-        <button class="btn primary" id="impSave">✔ Zapisz test</button>
-        <button class="btn" id="impCancel2">Anuluj</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div id="install-backdrop">
-  <div id="install-card">
-    <svg viewBox="0 0 120 120" width="88" height="88" aria-hidden="true">
-      <rect x="2" y="2" width="116" height="116" rx="24" fill="#1f5c3a"/>
-      <rect x="24" y="18" width="66" height="68" rx="6" fill="#fffefc"/>
-      <rect x="32" y="30" width="9" height="9" rx="2" fill="none" stroke="#1f5c3a" stroke-width="1.6"/>
-      <rect x="32" y="45" width="9" height="9" rx="2" fill="none" stroke="#1f5c3a" stroke-width="1.6"/>
-      <rect x="32" y="60" width="9" height="9" rx="2" fill="none" stroke="#1f5c3a" stroke-width="1.6"/>
-      <text x="45" y="39" font-size="11" fill="#666" font-family="Comic Sans MS, cursive">a)</text>
-      <text x="45" y="54" font-size="11" fill="#666" font-family="Comic Sans MS, cursive">b)</text>
-      <text x="45" y="69" font-size="11" fill="#666" font-family="Comic Sans MS, cursive">c)</text>
-      <line x1="62" y1="35" x2="82" y2="35" stroke="#cdd6d0" stroke-width="2"/>
-      <line x1="62" y1="50" x2="82" y2="50" stroke="#cdd6d0" stroke-width="2"/>
-      <line x1="62" y1="65" x2="82" y2="65" stroke="#cdd6d0" stroke-width="2"/>
-      <path d="M33 50 l4 5 l8 -12" fill="none" stroke="#2f8a57" stroke-width="2.6" stroke-linecap="round"/>
-      <g transform="rotate(-14 88 26)">
-        <circle cx="88" cy="26" r="13" fill="none" stroke="#b3261e" stroke-width="2"/>
-        <text x="88" y="30.5" font-size="13" fill="#b3261e" text-anchor="middle"
-              font-family="Comic Sans MS, cursive" font-weight="bold">5+</text>
-      </g>
-      <text x="60" y="106" font-size="15" fill="#fff" text-anchor="middle"
-            font-family="Comic Sans MS, cursive" font-weight="bold">Poprawczak</text>
-    </svg>
-    <h2>Poprawczak</h2>
-    <p>Zainstalować aplikację na telefonie? Wtedy działa jak ściąga – zawsze pod ręką i bez internetu.</p>
-    <div class="row">
-      <button class="btn primary" id="install-yes">Zainstaluj</button>
-      <button class="btn" id="install-no">Nie teraz</button>
-    </div>
-    <div id="install-how">
-      <b>Android:</b> menu ⋮ w Chrome → „Zainstaluj aplikację” / „Dodaj do ekranu głównego”.<br>
-      <b>iPhone:</b> przycisk Udostępnij → „Dodaj do ekranu początkowego”.
-    </div>
-  </div>
+  <!-- instalacja PWA: mały baner (nieblokujący) -->
+  <div id="install-banner" hidden></div>
 </div>
 
 <script type="text/plain" id="asset-worker">/*! For license information please see worker.min.js.LICENSE.txt */
@@ -1217,10 +1141,28 @@ else if (typeof exports === 'object')
     return { score: cnt ? best.score / cnt : 0, map: best.map, S: S };
   }
 
+  // szybki, zachłanny wskaźnik podobieństwa ODPOWIEDZI (do rankingu wszystkich pytań);
+  // dokładne przypisanie robi dopiero assign() dla czołówki
+  function answerScoreFast(pas, pa) {
+    var nonEmpty = 0, sum = 0;
+    for (var i = 0; i < pas.length; i++) {
+      if (!pas[i].s) continue;
+      nonEmpty++;
+      var best = 0;
+      for (var j = 0; j < pa.length; j++) {
+        var s = sim(pas[i], pa[j]);
+        if (s > best) best = s;
+      }
+      sum += best;
+    }
+    return nonEmpty ? sum / nonEmpty : 0;
+  }
+
   function evalCandidate(item, pq, pas, hasQ, hasA, sq) {
     var asg = hasA ? assign(pas, item.pa) : null;
     var sa = asg ? asg.score : 0;
-    var total = hasQ && hasA ? 0.55 * sq + 0.45 * sa : hasQ ? sq : sa;
+    // przewaga odpowiedzi (0.6) nad treścią pytania (0.4)
+    var total = hasQ && hasA ? 0.4 * sq + 0.6 * sa : hasQ ? sq : sa;
 
     var letterIdx = -1, optSim = 0, optMargin = 0, inferred = false;
     if (asg) {
@@ -1264,25 +1206,25 @@ else if (typeof exports === 'object')
     var out = { num: block.num, letter: null, conf: 'none', total: 0, optSim: 0, match: null, correct: null, alts: [] };
     if (!hasQ && !hasA) return out;
 
-    var cands = index.items.map(function (it) {
-      return { it: it, sq: hasQ ? qSim(pq, it.pq) : 0 };
-    });
-    var list;
-    if (hasQ) {
-      cands.sort(function (a, b) { return b.sq - a.sq; });
-      var top = cands[0].sq;
-      var seen = new Set();
-      list = [];
-      cands.forEach(function (c, i) {
-        if ((i < 40 && hasA) || (i < 8) || (c.sq >= top - 0.1 && list.length < 120)) {
-          if (!seen.has(c.it.id)) { seen.add(c.it.id); list.push(c); }
-        }
-      });
-    } else {
-      list = cands;
+    // ranking wstępny po WSZYSTKICH pytaniach bazy: przewaga odpowiedzi (saF),
+    // treść pytania (sq) jako wsparcie — dzięki temu właściwy wariant nie wypada
+    // z listy nawet gdy OCR przekręci treść pytania
+    var items = index.items;
+    var scored = new Array(items.length);
+    for (var i = 0; i < items.length; i++) {
+      var sq = hasQ ? qSim(pq, items[i].pq) : 0;
+      var saF = hasA ? answerScoreFast(pas, items[i].pa) : 0;
+      var sc = (hasQ && hasA) ? 0.4 * sq + 0.6 * saF : (hasQ ? sq : saF);
+      scored[i] = { it: items[i], sq: sq, sc: sc };
     }
+    scored.sort(function (a, b) { return b.sc - a.sc; });
 
-    var evals = list.map(function (c) { return evalCandidate(c.it, pq, pas, hasQ, hasA, c.sq); });
+    // dokładne przypisanie odpowiedzi (assign) tylko dla czołówki, żeby ustalić literę
+    var K = 60;
+    var evals = [];
+    for (var i = 0; i < Math.min(K, scored.length); i++) {
+      evals.push(evalCandidate(scored[i].it, pq, pas, hasQ, hasA, scored[i].sq));
+    }
     evals.sort(function (a, b) { return b.total - a.total; });
     var best = evals[0];
     if (!best || best.letterIdx < 0) return out;
@@ -1291,7 +1233,7 @@ else if (typeof exports === 'object')
     var alts = [];
     for (var i = 1; i < evals.length; i++) {
       var e = evals[i];
-      if (e.total < best.total - 0.02) break;
+      if (e.total < best.total - 0.03) break;
       if (e.letterIdx !== best.letterIdx && e.letterIdx >= 0) {
         if (alts.indexOf(e.letterIdx) < 0) alts.push(e.letterIdx);
       }
@@ -2024,68 +1966,7 @@ else if (typeof exports === 'object')
     });
   }
 
-  function renderTests() {
-    var sel = $('testSel');
-    sel.innerHTML = '';
-    tests.forEach(function (t) {
-      var o = document.createElement('option');
-      o.value = t.id;
-      o.textContent = t.name + ' (' + t.count + ' pytań)';
-      sel.appendChild(o);
-    });
-    sel.value = activeTest.id;
-    var custom = !activeTest.builtin;
-    $('tRename').disabled = !custom;
-    $('tDelete').disabled = !custom;
-  }
-
-  function initTests() {
-    return Store.list().then(function (ts) {
-      tests = ts;
-      var last = Store.lastId();
-      activeTest = tests.filter(function (t) { return t.id === last; })[0] || BUILTIN;
-      renderTests();
-      return buildForActive();
-    });
-  }
-
-  $('testSel').addEventListener('change', function () {
-    var t = tests.filter(function (x) { return x.id === $('testSel').value; })[0];
-    if (!t) return;
-    activeTest = t;
-    Store.setLast(t.id);
-    clearSession();
-    renderTests();
-    buildForActive();
-  });
-  $('tRename').addEventListener('click', function () {
-    if (activeTest.builtin) return;
-    var n = prompt('Nowa nazwa testu:', activeTest.name);
-    if (!n || !n.trim()) return;
-    Store.get(activeTest.id).then(function (db) {
-      activeTest.name = n.trim();
-      return Store.put({ id: activeTest.id, name: activeTest.name, date: activeTest.date, db: db });
-    }).then(function () {
-      var t = tests.filter(function (x) { return x.id === activeTest.id; })[0];
-      if (t) t.name = activeTest.name;
-      renderTests();
-      setStatus('Zmieniono nazwę testu.');
-    });
-  });
-  $('tDelete').addEventListener('click', function () {
-    if (activeTest.builtin) return;
-    if (!confirm('Usunąć test „' + activeTest.name + '”?')) return;
-    Store.remove(activeTest.id).then(function () {
-      tests = tests.filter(function (x) { return x.id !== activeTest.id; });
-      activeTest = BUILTIN;
-      Store.setLast('builtin');
-      clearSession();
-      renderTests();
-      return buildForActive();
-    });
-  });
-
-  /* ---------- import PDF ---------- */
+  /* ---------- import PDF (uśpiony — UI uproszczone do jednego testu) ---------- */
   var pdfWorkerUrl = null;
   function pdfWorker() {
     if (!pdfWorkerUrl && window.pdfjsLib) {
@@ -2218,43 +2099,7 @@ else if (typeof exports === 'object')
     renderPreview();
   }
 
-  $('impStrat').addEventListener('change', function () {
-    var id = $('impStrat').value;
-    if (id === 'none') {
-      importResult.questions.forEach(function (q) { q.c = -1; q.warn = ['brak poprawnej']; });
-    } else {
-      PdfImport.applyStrategy(importResult, id);
-    }
-    importResult.db = PdfImport.toDb(importResult.questions);
-    renderPreview();
-  });
-
-  $('impSave').addEventListener('click', function () {
-    var res = importResult;
-    if (!res || !res.db.length) { alert('Brak pytań do zapisania.'); return; }
-    var name = $('impName').value.trim() || ('Test ' + new Date().toLocaleDateString('pl-PL'));
-    var id = 't' + Date.now();
-    Store.put({ id: id, name: name, db: res.db }).then(function () {
-      return Store.list();
-    }).then(function (ts) {
-      tests = ts;
-      activeTest = tests.filter(function (t) { return t.id === id; })[0] || BUILTIN;
-      Store.setLast(activeTest.id);
-      renderTests();
-      return buildForActive();
-    }).then(function () {
-      var n = res.db.length;
-      hideImport();
-      setStatus('Zapisano test „' + name + '” (' + n + ' pytań).');
-    });
-  });
-
-  $('pdfFile').addEventListener('change', function (e) { startImport(e.target.files[0]); e.target.value = ''; });
-  $('pdfFile2').addEventListener('change', function (e) { startImport(e.target.files[0]); e.target.value = ''; });
-  $('impCancel').addEventListener('click', hideImport);
-  $('impCancel2').addEventListener('click', hideImport);
-
-  initTests();
+  buildForActive();
 
   /* ---------- OCR (Tesseract.js, wszystko lokalnie) ---------- */
   var workerP = null;
@@ -2338,9 +2183,10 @@ else if (typeof exports === 'object')
     $('tools').style.display = 'flex';
     $('out').style.display = 'none';
     setStatus(files.length > 1
-      ? 'Zdjęcia gotowe: ' + files.length + ' szt. Sprawdź orientację pierwszego i naciśnij „Rozpoznaj odpowiedzi”.'
-      : 'Zdjęcie gotowe. Sprawdź orientację i naciśnij „Rozpoznaj odpowiedzi”.');
+      ? 'Rozpoznawanie ' + files.length + ' zdjęć…'
+      : 'Rozpoznawanie zdjęcia…');
     getWorker(); // rozgrzej OCR w tle
+    recognize(); // start automatyczny
   }
 
   function renderCanvas(maxSide) {
@@ -2554,6 +2400,9 @@ else if (typeof exports === 'object')
         (r.match ? '<i>W bazie:</i> ' + esc(r.match.slice(0, 140)) + '<br><span class="c">Poprawna: ' + esc(r.correct) + '</span>' : '<i>brak dopasowania</i>');
       det.appendChild(it);
     });
+    var ok = 0, low = 0, none = 0;
+    results.forEach(function (r) { if (r.conf === 'ok') ok++; else if (r.conf === 'low') low++; else none++; });
+    $('summary').textContent = 'Pewnych: ' + ok + ' · Niepewnych: ' + low + ' · Bez odpowiedzi: ' + none;
     $('sessionInfo').textContent = 'Połączono zdjęć: ' + sessionPhotos + '. Rozpoznanych numerów pytań: ' + results.length + '.';
     $('out').style.display = 'block';
     $('out').dataset.plain = plain.join('\n');
@@ -2629,37 +2478,36 @@ else if (typeof exports === 'object')
   'use strict';
   var KEY = 'poprawczak-install-v1';
   var deferred = null;
-  var backdrop = document.getElementById('install-backdrop');
-  var how = document.getElementById('install-how');
-  var yes = document.getElementById('install-yes');
-
-  window.addEventListener('beforeinstallprompt', function (e) {
-    e.preventDefault();
-    deferred = e;
-  });
+  var banner = document.getElementById('install-banner');
 
   function isInstalled() {
     return (window.matchMedia && matchMedia('(display-mode: standalone)').matches) ||
       navigator.standalone === true;
   }
-
-  function close() {
+  function isIOS() {
+    return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  }
+  function dismiss() {
     try { localStorage.setItem(KEY, '1'); } catch (e) {}
-    backdrop.style.display = 'none';
+    banner.hidden = true;
+  }
+  function show(html) {
+    banner.innerHTML = html;
+    banner.hidden = false;
   }
 
-  document.getElementById('install-no').addEventListener('click', close);
-  backdrop.addEventListener('click', function (e) { if (e.target === backdrop) close(); });
-  yes.addEventListener('click', function () {
-    if (deferred) {
+  // Android / desktop Chrome: baner pokazujemy dopiero, gdy instalacja jest faktycznie możliwa
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferred = e;
+    show('<button id="pwa-install" class="btn primary">📲 Zainstaluj aplikację</button>' +
+         '<button id="pwa-later" class="btn">Nie teraz</button>');
+    document.getElementById('pwa-install').addEventListener('click', function () {
       deferred.prompt();
-      deferred.userChoice.finally(close);
+      deferred.userChoice.finally(dismiss);
       deferred = null;
-    } else {
-      how.style.display = 'block'; // brak natywnego promptu – instrukcja ręczna
-      yes.textContent = 'Jasne, już wiem';
-      yes.onclick = close;
-    }
+    });
+    document.getElementById('pwa-later').addEventListener('click', dismiss);
   });
 
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
@@ -2668,7 +2516,15 @@ else if (typeof exports === 'object')
 
   try {
     if (!isInstalled() && !localStorage.getItem(KEY)) {
-      setTimeout(function () { backdrop.style.display = 'flex'; }, 1500);
+      if (isIOS()) {
+        // iOS nie ma natywnej instalacji (ograniczenie Apple) – tylko czytelna instrukcja
+        setTimeout(function () {
+          show('<span>📱 iPhone: <b>Udostępnij → Dodaj do ekranu głównego</b></span>' +
+               '<button id="pwa-ok" class="btn">OK</button>');
+          document.getElementById('pwa-ok').addEventListener('click', dismiss);
+        }, 2500);
+      }
+      // Android bez zdarzenia: czekamy na beforeinstallprompt (baner pojawi się, gdy będzie można)
     }
   } catch (e) {}
 })();
