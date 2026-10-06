@@ -1195,7 +1195,29 @@ else if (typeof exports === 'object')
     var observed = pas.filter(function (p) { return p.s; }).length;
     if (letterIdx < 0 || letterIdx >= item.a.length || optSim < 0.4 || optMargin < 0.03 ||
         (observed < item.a.length && optSim < 0.88)) letterIdx = -1;
-    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, optMargin: optMargin, inferred: inferred };
+
+    // Inferencja pozycyjna: pytanie jest rozpoznane, ale treść poprawnej
+    // odpowiedzi zaginęła w OCR. Jeśli brakuje DOKŁADNIE jednej pozycji na
+    // zdjęciu i właśnie poprawna odpowiedź z bazy nie dostała pary — litera
+    // to ta brakująca pozycja (etykieta na zdjęciu, niezależnie od kolejności).
+    var posInferred = false;
+    if (letterIdx < 0 && asg) {
+      var n = item.a.length;
+      var usedDb = new Array(n);
+      var freeSlots = [];
+      for (var s2 = 0; s2 < n; s2++) {
+        var mj = s2 < pas.length ? asg.map[s2] : -1;
+        if (mj >= 0 && asg.S[s2][mj] >= 0.5) usedDb[mj] = true;   // pewna para
+        else freeSlots.push(s2);                                 // wolna pozycja
+      }
+      var onlyCorrectMissing = !usedDb[item.c];
+      for (var di = 0; di < n; di++) if (!usedDb[di] && di !== item.c) onlyCorrectMissing = false;
+      if (freeSlots.length === 1 && onlyCorrectMissing) {
+        letterIdx = freeSlots[0];
+        posInferred = true;
+      }
+    }
+    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, optMargin: optMargin, inferred: inferred, posInferred: posInferred };
   }
 
   function matchBlock(block, index) {
@@ -1249,7 +1271,12 @@ else if (typeof exports === 'object')
     // litera zgadnięta pozycyjnie (etykieta nieczytelna w OCR) = niepewne
     var letterGuessed = block.orphanSlots && block.orphanSlots[best.letterIdx];
 
-    if (alts.length || best.inferred || letterGuessed) out.conf = best.total >= 0.4 ? 'low' : 'none';
+    if (alts.length || letterGuessed) out.conf = best.total >= 0.4 ? 'low' : 'none';
+    else if (best.posInferred) {
+      // pytanie rozpoznane pewnie + brakująca pozycja = poprawna odpowiedź
+      out.conf = (best.total >= 0.62 && best.sa >= 0.55) ? 'ok' : (best.total >= 0.4 ? 'low' : 'none');
+    }
+    else if (best.inferred) out.conf = best.total >= 0.4 ? 'low' : 'none';
     else if (best.total >= 0.62 && best.optSim >= 0.5) out.conf = 'ok';
     else if (best.total >= 0.4) out.conf = 'low';
     else { out.conf = 'none'; }
