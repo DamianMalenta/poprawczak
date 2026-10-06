@@ -85,7 +85,7 @@
 
     <div class="row">
       <label class="btn primary">📷 Zrób zdjęcie<input id="cam" type="file" accept="image/*" capture="environment" hidden></label>
-      <label class="btn">🖼 Z galerii<input id="gal" type="file" accept="image/*" hidden></label>
+      <label class="btn">🖼 Z galerii (jedno lub kilka)<input id="gal" type="file" accept="image/*" multiple hidden></label>
     </div>
 
     <canvas id="preview"></canvas>
@@ -2305,26 +2305,41 @@ else if (typeof exports === 'object')
   var srcBitmap = null, rotation = 0;
   var preview = $('preview');
 
-  async function loadFile(file) {
-    if (!file) return;
-    setStatus('Wczytywanie zdjęcia…');
-    if (srcBitmap && typeof srcBitmap.close === 'function') srcBitmap.close();
-    srcBitmap = null;
-    try {
-      srcBitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-    } catch (e) {
-      srcBitmap = await new Promise(function (res, rej) {
+  function fileToBitmap(file) {
+    return createImageBitmap(file, { imageOrientation: 'from-image' }).then(null, function () {
+      return new Promise(function (res, rej) {
         var img = new Image();
         img.onload = function () { res(img); };
         img.onerror = rej;
         img.src = URL.createObjectURL(file);
       });
+    });
+  }
+
+  // nowa porcja zdjęć = nowe sprawdzenie: poprzednie wyniki znikają
+  var pendingFiles = [];
+
+  async function setBatch(files) {
+    files = Array.prototype.slice.call(files || []);
+    if (!files.length || busy) return;
+    clearSession();
+    pendingFiles = files;
+    setStatus('Wczytywanie zdjęcia…');
+    if (srcBitmap && typeof srcBitmap.close === 'function') srcBitmap.close();
+    srcBitmap = null;
+    try {
+      srcBitmap = await fileToBitmap(files[0]);
+    } catch (e) {
+      setStatus('Nie mogę otworzyć tego zdjęcia.');
+      return;
     }
     rotation = 0;
     drawPreview();
     $('tools').style.display = 'flex';
-    if (!sessionPhotos) $('out').style.display = 'none';
-    setStatus('Zdjęcie gotowe. Sprawdź orientację i naciśnij „Rozpoznaj”. Dotychczasowe wyniki zostaną zachowane.');
+    $('out').style.display = 'none';
+    setStatus(files.length > 1
+      ? 'Zdjęcia gotowe: ' + files.length + ' szt. Sprawdź orientację pierwszego i naciśnij „Rozpoznaj odpowiedzi”.'
+      : 'Zdjęcie gotowe. Sprawdź orientację i naciśnij „Rozpoznaj odpowiedzi”.');
     getWorker(); // rozgrzej OCR w tle
   }
 
@@ -2427,33 +2442,43 @@ else if (typeof exports === 'object')
   var busy = false;
 
   async function recognize() {
-    if (!srcBitmap || busy) return;
+    if (!pendingFiles.length || busy) return;
     busy = true;
     $('go').disabled = true;
     var prog = $('prog');
     prog.style.display = 'block'; prog.removeAttribute('value');
     try {
-      setStatus('Przygotowanie obrazu…');
-      await new Promise(function (r) { setTimeout(r, 30); });
-      var canvas = renderCanvas(2600);
-      canvas = unevenLight(canvas) ? enhance(canvas) : grayscale(canvas);
-      var blob = await new Promise(function (r) { canvas.toBlob(r, 'image/png'); });
-      if (!workerReady) setStatus('Uruchamianie silnika OCR (pierwszy raz może chwilę potrwać)…');
-      var w = await getWorker();
-      progressCb = function (m) {
-        if (m.status === 'recognizing text') {
-          prog.value = m.progress;
-          setStatus('Rozpoznawanie tekstu… ' + Math.round(m.progress * 100) + '%');
+      var files = pendingFiles.slice();
+      for (var i = 0; i < files.length; i++) {
+        var label = files.length > 1 ? 'Zdjęcie ' + (i + 1) + '/' + files.length + ': ' : '';
+        setStatus(label + 'Przygotowanie obrazu…');
+        await new Promise(function (r) { setTimeout(r, 30); });
+        if (!srcBitmap || i > 0) {
+          if (srcBitmap && typeof srcBitmap.close === 'function') srcBitmap.close();
+          srcBitmap = await fileToBitmap(files[i]);
         }
-      };
-      prog.value = 0;
-      setStatus('Rozpoznawanie tekstu…');
-      var res = await w.recognize(blob);
-      await w.terminate();
-      workerP = null;
-      workerReady = false;
-      progressCb = null;
-      showResults(res.data.text || '');
+        var canvas = renderCanvas(2600);
+        canvas = unevenLight(canvas) ? enhance(canvas) : grayscale(canvas);
+        var blob = await new Promise(function (r) { canvas.toBlob(r, 'image/png'); });
+        canvas.width = canvas.height = 0;
+        if (!workerReady) setStatus(label + 'Uruchamianie silnika OCR (pierwszy raz może chwilę potrwać)…');
+        var w = await getWorker();
+        progressCb = function (m) {
+          if (m.status === 'recognizing text') {
+            prog.value = m.progress;
+            setStatus(label + 'Rozpoznawanie tekstu… ' + Math.round(m.progress * 100) + '%');
+          }
+        };
+        prog.value = 0;
+        setStatus(label + 'Rozpoznawanie tekstu…');
+        var res = await w.recognize(blob);
+        await w.terminate();
+        workerP = null;
+        workerReady = false;
+        progressCb = null;
+        showResults(res.data.text || '');
+        if (i + 1 < files.length) getWorker(); // rozgrzej worker pod kolejne zdjęcie
+      }
       setStatus('Gotowe.');
     } catch (e) {
       setStatus('Błąd: ' + (e && e.message ? e.message : e));
@@ -2564,8 +2589,8 @@ else if (typeof exports === 'object')
   }
 
   /* ---------- zdarzenia ---------- */
-  $('cam').addEventListener('change', function (e) { loadFile(e.target.files[0]); e.target.value = ''; });
-  $('gal').addEventListener('change', function (e) { loadFile(e.target.files[0]); e.target.value = ''; });
+  $('cam').addEventListener('change', function (e) { setBatch(e.target.files); e.target.value = ''; });
+  $('gal').addEventListener('change', function (e) { setBatch(e.target.files); e.target.value = ''; });
   $('rotL').addEventListener('click', function () { rotation -= 90; drawPreview(); });
   $('rotR').addEventListener('click', function () { rotation += 90; drawPreview(); });
   $('go').addEventListener('click', recognize);
