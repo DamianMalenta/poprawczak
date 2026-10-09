@@ -28,7 +28,6 @@
   .btn[disabled] { opacity:.5; }
   button.btn { font-family: inherit; }
   .small { flex: 0 0 56px; padding: 14px 0; font-size: 20px; }
-  canvas#preview { width:100%; max-height: 50vh; object-fit: contain; background:#ddd; border-radius:10px; display:none; }
   progress { width:100%; height: 14px; display:none; }
   #answers { display:grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap:8px; margin: 8px 0; }
   .ans { background:#fff; border-radius:12px; padding:14px 6px; text-align:center; font-size:30px; font-weight:800;
@@ -78,12 +77,6 @@
       <label class="btn">🖼 Z galerii (jedno lub kilka)<input id="gal" type="file" accept="image/*" multiple hidden></label>
     </div>
 
-    <canvas id="preview"></canvas>
-    <div class="row" id="tools" style="display:none">
-      <button class="btn small" id="rotL" title="Obróć w lewo">⟲</button>
-      <button class="btn small" id="rotR" title="Obróć w prawo">⟳</button>
-      <button class="btn primary" id="go">Ponów rozpoznanie</button>
-    </div>
     <progress id="prog" max="1" value="0"></progress>
 
     <section id="out" style="display:none">
@@ -98,6 +91,12 @@
       <details><summary>Szczegóły dopasowania</summary><div id="details"></div></details>
       <details><summary>Tekst odczytany ze zdjęcia (OCR)</summary><pre id="raw"></pre></details>
     </section>
+
+    <div class="row" id="tools" style="display:none">
+      <button class="btn small" id="rotL" title="Obróć w lewo">⟲</button>
+      <button class="btn small" id="rotR" title="Obróć w prawo">⟳</button>
+      <button class="btn primary" id="go">Ponów rozpoznanie</button>
+    </div>
 
     <section>
       <details>
@@ -924,13 +923,12 @@ else if (typeof exports === 'object')
     var cur = null;
     var pending = [];
     var lastNum = 0;      // ostatni numer z NAPRAWDĘ ponumerowanego bloku (nie fantomów)
-    var blockCount = 0;   // licznik bloków do wyświetlania numerów bloków bez numeru
 
     function startBlock(num, qText, realNum) {
-      if (num == null) num = blockCount + 1;
       if (realNum && num > lastNum) lastNum = num;
-      blockCount++;
-      cur = { num: num, question: qText || '', entries: [], nextK: 0 };
+      // blok bez nagłówka „N." (ucięty brzeg kadru) NIE dostaje numeru –
+      // w sesji z kilku zdjęć fantomowa „1" kolidowałaby z prawdziwym pyt. 1
+      cur = { num: realNum ? num : null, real: !!realNum, question: qText || '', entries: [], nextK: 0 };
       blocks.push(cur);
     }
 
@@ -1217,7 +1215,11 @@ else if (typeof exports === 'object')
         posInferred = true;
       }
     }
-    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, optMargin: optMargin, inferred: inferred, posInferred: posInferred };
+    // długość tekstu w slocie wytypowanym pozycyjnie: gdy slot ma normalną
+    // treść, która po prostu nie przypomina poprawnej odpowiedzi, dedukcja
+    // jest słaba (zgadliśmy źle sparowany OCR) — nie wolno dać conf 'ok'
+    var posSlotLen = posInferred && pas[letterIdx] && pas[letterIdx].s ? pas[letterIdx].s.length : 0;
+    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, optMargin: optMargin, inferred: inferred, posInferred: posInferred, posSlotLen: posSlotLen };
   }
 
   function matchBlock(block, index) {
@@ -1225,7 +1227,7 @@ else if (typeof exports === 'object')
     var pas = block.answers.slice(0, 6).map(function (a) { return profile(norm(a)); });
     var hasQ = pq.s.length >= 8;
     var hasA = pas.filter(function (p) { return p.s; }).length >= 2;
-    var out = { num: block.num, letter: null, conf: 'none', total: 0, optSim: 0, match: null, correct: null, alts: [] };
+    var out = { num: block.num, real: !!block.real, dbId: null, letter: null, conf: 'none', total: 0, optSim: 0, match: null, correct: null, alts: [] };
     if (!hasQ && !hasA) return out;
 
     // ranking wstępny po WSZYSTKICH pytaniach bazy: przewaga odpowiedzi (saF),
@@ -1249,7 +1251,32 @@ else if (typeof exports === 'object')
     }
     evals.sort(function (a, b) { return b.total - a.total; });
     var best = evals[0];
-    if (!best || best.letterIdx < 0) return out;
+    if (!best) return out;
+    // identyfikator pytania z bazy – potrzebny do deduplikacji między zdjęciami
+    // (to samo pytanie na krawędzi dwóch kadrów) nawet gdy litery nie ustalono;
+    // zbyt słabe dopasowanie nie może „zawłaszczyć" klucza deduplikacji
+    if (best.total >= 0.35) {
+      out.dbId = best.item.id;
+      out.match = best.item.q;
+      out.correct = best.item.a[best.item.c];
+    }
+    out.total = best.total;
+    if (best.letterIdx < 0) {
+      // treść poprawnej odpowiedzi nie zweryfikowała żadnej litery (zmiażdżony
+      // OCR opcji). Na egzaminie kolejność odpowiedzi = kolejność z bazy, więc
+      // gdy samo pytanie albo zestaw odpowiedzi dopasowane są pewnie, litera
+      // z klucza bazy jest lepszą wskazówką niż brak — ale flagujemy ją jako
+      // nieweryfikowaną treścią (keyFallback)
+      if (best.sq >= 0.7 || (best.sq >= 0.55 && best.sa >= 0.6)) {
+        // zawsze 'low': gdyby kolejność odpowiedzi na arkuszu różniła się od
+        // bazy, litera z klucza byłaby błędna — nieweryfikowana kopia klucza
+        // nie może być pewna
+        out.letter = LETTERS[best.item.c];
+        out.conf = 'low';
+        out.keyFallback = true;
+      }
+      return out;
+    }
 
     // inne pytania o niemal tym samym wyniku, ale z inną literą => niejednoznaczne
     var alts = [];
@@ -1262,10 +1289,7 @@ else if (typeof exports === 'object')
     }
 
     out.letter = LETTERS[best.letterIdx] || '?';
-    out.total = best.total;
     out.optSim = best.optSim;
-    out.match = best.item.q;
-    out.correct = best.item.a[best.item.c];
     out.alts = alts.map(function (x) { return LETTERS[x]; });
 
     // litera zgadnięta pozycyjnie (etykieta nieczytelna w OCR) = niepewne
@@ -1273,8 +1297,10 @@ else if (typeof exports === 'object')
 
     if (alts.length || letterGuessed) out.conf = best.total >= 0.4 ? 'low' : 'none';
     else if (best.posInferred) {
-      // pytanie rozpoznane pewnie + brakująca pozycja = poprawna odpowiedź
-      out.conf = (best.total >= 0.62 && best.sa >= 0.55) ? 'ok' : (best.total >= 0.4 ? 'low' : 'none');
+      // pytanie rozpoznane pewnie + brakująca pozycja = poprawna odpowiedź;
+      // conf 'ok' tylko gdy wolny slot jest pusty/śmieciowy (tekst naprawdę
+      // zaginął w OCR) — jeśli tam jest czytelny niepasujący tekst, to zgadywanie
+      out.conf = (best.posSlotLen < 8 && best.total >= 0.62 && best.sa >= 0.55) ? 'ok' : (best.total >= 0.4 ? 'low' : 'none');
     }
     else if (best.inferred) out.conf = best.total >= 0.4 ? 'low' : 'none';
     else if (best.total >= 0.62 && best.optSim >= 0.5) out.conf = 'ok';
@@ -1295,9 +1321,10 @@ else if (typeof exports === 'object')
   }
 
   function formatOne(r) {
-    if (!r.letter || r.conf === 'none') return r.num + '-?';
-    if (r.alts && r.alts.length) return r.num + '-' + r.letter + '?(' + [r.letter].concat(r.alts).join('/') + ')';
-    return r.num + '-' + r.letter + (r.conf === 'ok' ? '' : '?');
+    var n = r.num == null ? '?' : r.num;
+    if (!r.letter || r.conf === 'none') return n + '-?';
+    if (r.alts && r.alts.length) return n + '-' + r.letter + '?(' + [r.letter].concat(r.alts).join('/') + ')';
+    return n + '-' + r.letter + (r.conf === 'ok' ? '' : '?');
   }
 
   /* ---------- ręczne wyszukiwanie w bazie ---------- */
@@ -1981,6 +2008,7 @@ else if (typeof exports === 'object')
   var index = null;
   var activeTest = BUILTIN;
   var tests = [];
+  var sessionPages = [];   // pages[i] = { texts, results } – osobny wynik każdego zdjęcia
   var sessionResults = {};
   var sessionPhotos = 0;
 
@@ -2175,7 +2203,6 @@ else if (typeof exports === 'object')
 
   /* ---------- obraz ---------- */
   var srcBitmap = null, rotation = 0;
-  var preview = $('preview');
 
   function fileToBitmap(file) {
     return createImageBitmap(file, { imageOrientation: 'from-image' }).then(null, function () {
@@ -2206,7 +2233,6 @@ else if (typeof exports === 'object')
       return;
     }
     rotation = 0;
-    drawPreview();
     $('tools').style.display = 'flex';
     $('out').style.display = 'none';
     setStatus(files.length > 1
@@ -2216,28 +2242,23 @@ else if (typeof exports === 'object')
     recognize(); // start automatyczny
   }
 
-  function renderCanvas(maxSide) {
+  function renderCanvas(maxSide, maxScale) {
     var sw = srcBitmap.width, sh = srcBitmap.height;
     var rot = ((rotation % 360) + 360) % 360;
     var swap = rot === 90 || rot === 270;
     var w0 = swap ? sh : sw, h0 = swap ? sw : sh;
-    var scale = Math.min(2, maxSide / Math.max(w0, h0));
+    var scale = Math.min(maxScale || 2, maxSide / Math.max(w0, h0));
     var c = document.createElement('canvas');
     c.width = Math.max(1, Math.round(w0 * scale));
     c.height = Math.max(1, Math.round(h0 * scale));
     var ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high'; // domyślne 'low' ząbkuje cienkie szeryfy przy downscale
     ctx.translate(c.width / 2, c.height / 2);
     ctx.rotate(rot * Math.PI / 180);
     ctx.scale(scale, scale);
     ctx.drawImage(srcBitmap, -sw / 2, -sh / 2);
     return c;
-  }
-
-  function drawPreview() {
-    var c = renderCanvas(1000);
-    preview.width = c.width; preview.height = c.height;
-    preview.getContext('2d').drawImage(c, 0, 0);
-    preview.style.display = 'block';
   }
 
   function unevenLight(canvas) {
@@ -2264,9 +2285,24 @@ else if (typeof exports === 'object')
   function grayscale(canvas) {
     var ctx = canvas.getContext('2d');
     var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    for (var p = 0; p < img.data.length; p += 4) {
-      var v = 0.299 * img.data[p] + 0.587 * img.data[p + 1] + 0.114 * img.data[p + 2];
-      img.data[p] = img.data[p + 1] = img.data[p + 2] = v;
+    var d = img.data, n = d.length / 4;
+    var hist = new Uint32Array(256);
+    for (var p = 0; p < d.length; p += 4) {
+      var v = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) | 0;
+      d[p] = d[p + 1] = d[p + 2] = v;
+      hist[v]++;
+    }
+    // rozciągnięcie kontrastu: ~1% najciemniejszych pikseli -> 0, ~1% najjaśniejszych -> 255
+    var t = n * 0.01, lo = 0, hi = 255, acc = 0;
+    for (var i = 0; i < 256; i++) { acc += hist[i]; if (acc >= t) { lo = i; break; } }
+    acc = 0;
+    for (var j = 255; j > lo; j--) { acc += hist[j]; if (acc >= t) { hi = j; break; } }
+    if (hi > lo + 16) {
+      var k = 255 / (hi - lo);
+      for (var q = 0; q < d.length; q += 4) {
+        var v2 = (d[q] - lo) * k;
+        d[q] = d[q + 1] = d[q + 2] = v2 < 0 ? 0 : v2 > 255 ? 255 : v2;
+      }
     }
     ctx.putImageData(img, 0, 0);
     return canvas;
@@ -2322,6 +2358,9 @@ else if (typeof exports === 'object')
     prog.style.display = 'block'; prog.removeAttribute('value');
     try {
       var files = pendingFiles.slice();
+      // każde zdjęcie przetwarzane jest do odrębnej struktury pages[i];
+      // wyniki całej porcji scalane są dopiero po zakończeniu batcha
+      var pages = [];
       for (var i = 0; i < files.length; i++) {
         var label = files.length > 1 ? 'Zdjęcie ' + (i + 1) + '/' + files.length + ': ' : '';
         setStatus(label + 'Przygotowanie obrazu…');
@@ -2345,14 +2384,83 @@ else if (typeof exports === 'object')
         prog.value = 0;
         setStatus(label + 'Rozpoznawanie tekstu…');
         var res = await w.recognize(blob);
+        var text = res.data.text || '';
+
+        // awaryjny drugi odczyt: automatyczna segmentacja (PSM 3) potrafi pominąć
+        // całe bloki tekstu na zniszczonym zdjęciu — wtedy czytamy stronę jako
+        // jednolity blok (PSM 6) na wzmocnionym obrazie i scalamy wyniki
+        var solved = Matcher.solve(text, index);
+        var usable = solved.results.filter(function (r) { return r.letter && r.conf !== 'none'; }).length;
+        var nums = solved.blocks.filter(function (b) { return b.real; }).map(function (b) { return b.num; }).sort(function (a, b) { return a - b; });
+        var missing = 0;
+        for (var gi = 1; gi < nums.length; gi++) missing += Math.max(0, nums[gi] - nums[gi - 1] - 1);
+        // PSM 3 potrafi wyciąć cały blok na brzegu kadru (164/165 na górze strony),
+        // a „missing" widzi tylko dziury W ŚRODKU numeracji — dlatego doczytujemy
+        // także wtedy, gdy jakikolwiek blok nie dostał pewnej litery
+        var unresolved = solved.results.filter(function (r) { return !r.letter || r.conf !== 'ok'; }).length;
+        var pageTexts = [text];
+        var pageResults = solved.results;
+        if (usable === 0 || missing > 0 || unresolved > 0) {
+          setStatus(label + 'Doczytuję trudniejsze fragmenty…');
+          var c2 = enhance(renderCanvas(2600));
+          var b3 = await new Promise(function (r) { c2.toBlob(r, 'image/png'); });
+          c2.width = c2.height = 0;
+          await w.setParameters({ tessedit_pageseg_mode: '6' });
+          var res2 = await w.recognize(b3);
+          await w.setParameters({ tessedit_pageseg_mode: '3' });
+          var out2 = Matcher.solve(res2.data.text || '', index);
+          var usable2 = out2.results.filter(function (r) { return r.letter && r.conf !== 'none'; }).length;
+          if (usable2 > 0) {
+            pageTexts.push(res2.data.text);
+            pageResults = pageResults.concat(out2.results);
+          }
+        }
+        // trzeci odczyt: większa skala pomaga na drobnym druku i brzegach kadru
+        // (np. ucięte odpowiedzi na dole strony). Wyniki przyjmujemy TYLKO dla
+        // pytań, które wcześniejsze odczyty zostawiły bez pewnej litery —
+        // szumniejszy przebieg nie może podważyć już rozpoznanej odpowiedzi
+        var answeredOk = {}, stillOpen = false;
+        pageResults.forEach(function (r) {
+          if (r.letter && r.conf === 'ok') {
+            if (r.num != null) answeredOk['n' + r.num] = true;
+            if (r.dbId != null) answeredOk['d' + r.dbId] = true;
+          }
+        });
+        pageResults.forEach(function (r) {
+          if (!r.real) return;
+          var n = r.num != null && answeredOk['n' + r.num];
+          var d = r.dbId != null && answeredOk['d' + r.dbId];
+          if (!n && !d) stillOpen = true;
+        });
+        if (stillOpen) {
+          setStatus(label + 'Doczytuję drobny druk…');
+          var c3 = enhance(renderCanvas(4000, 4));
+          var b4 = await new Promise(function (r) { c3.toBlob(r, 'image/png'); });
+          c3.width = c3.height = 0;
+          var res3 = await w.recognize(b4);
+          var out3 = Matcher.solve(res3.data.text || '', index);
+          var extra = out3.results.filter(function (r) {
+            if (!r.letter) return false;
+            if (r.num != null && answeredOk['n' + r.num]) return false;
+            if (r.dbId != null && answeredOk['d' + r.dbId]) return false;
+            return true;
+          });
+          if (extra.length) {
+            pageTexts.push(res3.data.text);
+            pageResults = pageResults.concat(extra);
+          }
+        }
         await w.terminate();
         workerP = null;
         workerReady = false;
         progressCb = null;
-        showResults(res.data.text || '');
+        canvas.width = canvas.height = 0;
+        pages[i] = { texts: pageTexts, results: pageResults };
         if (i + 1 < files.length) getWorker(); // rozgrzej worker pod kolejne zdjęcie
       }
+      addPages(pages);
       setStatus('Gotowe.');
+      $('out').scrollIntoView({ behavior: 'smooth' });
     } catch (e) {
       setStatus('Błąd: ' + (e && e.message ? e.message : e));
     } finally {
@@ -2375,31 +2483,54 @@ else if (typeof exports === 'object')
   function selectedResult(entry) {
     var choices = Object.keys(entry.choices).map(function (k) { return entry.choices[k]; });
     choices.sort(function (a, b) { return resultRank(b) - resultRank(a) || b.total - a.total; });
-    if (!choices.length) return entry.none;
-    if (choices.length === 1 || resultRank(choices[0]) > resultRank(choices[1]) || choices[0].total >= choices[1].total + 0.08) return choices[0];
-    var conflict = Object.assign({}, choices[0]);
-    conflict.letter = null;
-    conflict.conf = 'none';
-    conflict.conflict = true;
-    return conflict;
+    var sel;
+    if (!choices.length) sel = entry.none;
+    else if (choices.length === 1) sel = choices[0];
+    else {
+      // sprzeczne litery z różnych zdjęć/odczytów: nie pozwalamy rangi conf
+      // wygrywać z wyraźnie wyższym total — bierzemy lepszy wynik, ale
+      // degradujemy go do 'low' i oznaczamy konflikt zamiast pewnego błędu
+      var byTotal = choices.slice().sort(function (a, b) { return b.total - a.total; });
+      if (resultRank(byTotal[0]) >= resultRank(byTotal[1]) && byTotal[0].total >= byTotal[1].total + 0.15) sel = byTotal[0];
+      else {
+        sel = Object.assign({}, byTotal[0]);
+        sel.conf = 'low';
+        sel.conflict = true;
+      }
+    }
+    // fragment bez numeru (ucięty brzeg kadru) dziedziczy numer arkusza,
+    // gdy inny odczyt tego samego pytania z bazy miał czytelny numer
+    if (sel && sel.num == null && entry.nums && entry.nums.length)
+      sel = Object.assign({}, sel, { num: entry.nums[0] });
+    return sel;
   }
 
-  function mergeResults(results) {
-    results.forEach(function (r) {
-      var key = String(r.num);
-      var entry = sessionResults[key] || { choices: {}, none: null };
-      if (r.letter && r.conf !== 'none') {
-        var old = entry.choices[r.letter];
-        if (!old || resultRank(r) > resultRank(old) || (resultRank(r) === resultRank(old) && r.total > old.total)) entry.choices[r.letter] = r;
-      } else if (!entry.none || r.total > entry.none.total) entry.none = r;
-      sessionResults[key] = entry;
+  // scalanie całej porcji: klucz deduplikacji to pytanie z bazy (dbId),
+  // awaryjnie numer ze zdjęcia; fragment bez numeru i bez dopasowania
+  // dostaje klucz unikalny – nigdy nie udaje pytania „1"
+  function mergePages() {
+    sessionResults = {};
+    sessionPages.forEach(function (page, pi) {
+      page.results.forEach(function (r, ri) {
+        var key = r.dbId != null ? 'db' + r.dbId
+          : r.num != null ? 'n' + r.num
+          : 'f' + pi + '.' + ri;
+        var entry = sessionResults[key] || { choices: {}, none: null, nums: [] };
+        if (r.num != null && entry.nums.indexOf(r.num) < 0) entry.nums.push(r.num);
+        if (r.letter && r.conf !== 'none') {
+          var old = entry.choices[r.letter];
+          if (!old || resultRank(r) > resultRank(old) || (resultRank(r) === resultRank(old) && r.total > old.total)) entry.choices[r.letter] = r;
+        } else if (!entry.none || r.total > entry.none.total) entry.none = r;
+        sessionResults[key] = entry;
+      });
     });
   }
 
   function sessionList() {
     return Object.keys(sessionResults).map(function (key) { return selectedResult(sessionResults[key]); })
-      .filter(function (r) { return r; })
-      .sort(function (a, b) { return Number(a.num) - Number(b.num); });
+      // szum bez litery i bez numeru arkusza nie trafia do kafelków
+      .filter(function (r) { return r && (r.letter || r.num != null); })
+      .sort(function (a, b) { return (a.num == null ? 1e9 : a.num) - (b.num == null ? 1e9 : b.num); });
   }
 
   function renderResults() {
@@ -2423,6 +2554,7 @@ else if (typeof exports === 'object')
       it.className = 'item ' + cls;
       it.innerHTML = '<b class="n">' + esc(label) + '</b> <span class="hint">(dopasowanie ' + Math.round(r.total * 100) + '%)</span><br>' +
         (r.conflict ? '<span class="hint">Sprzeczne wyniki z kilku zdjęć.</span><br>' : '') +
+        (r.keyFallback ? '<span class="hint">Litera z klucza bazy — treść odpowiedzi na zdjęciu nieczytelna.</span><br>' : '') +
         '<i>Na zdjęciu:</i> ' + esc((r.ocrQuestion || '').slice(0, 140)) + '<br>' +
         (r.match ? '<i>W bazie:</i> ' + esc(r.match.slice(0, 140)) + '<br><span class="c">Poprawna: ' + esc(r.correct) + '</span>' : '<i>brak dopasowania</i>');
       det.appendChild(it);
@@ -2430,12 +2562,13 @@ else if (typeof exports === 'object')
     var ok = 0, low = 0, none = 0;
     results.forEach(function (r) { if (r.conf === 'ok') ok++; else if (r.conf === 'low') low++; else none++; });
     $('summary').textContent = 'Pewnych: ' + ok + ' · Niepewnych: ' + low + ' · Bez odpowiedzi: ' + none;
-    $('sessionInfo').textContent = 'Połączono zdjęć: ' + sessionPhotos + '. Rozpoznanych numerów pytań: ' + results.length + '.';
+    $('sessionInfo').textContent = 'Połączono zdjęć: ' + sessionPhotos + '. Rozpoznanych pytań: ' + results.length + '.';
     $('out').style.display = 'block';
     $('out').dataset.plain = plain.join('\n');
   }
 
   function clearSession() {
+    sessionPages = [];
     sessionResults = {};
     sessionPhotos = 0;
     $('answers').innerHTML = '';
@@ -2445,13 +2578,33 @@ else if (typeof exports === 'object')
     $('out').style.display = 'none';
   }
 
-  function showResults(text) {
-    lastText = text;
-    var out = Matcher.solve(text, index);
-    sessionPhotos++;
-    mergeResults(out.results);
-    $('raw').textContent = text;
+  function renderRaw() {
+    var parts = [];
+    sessionPages.forEach(function (p, i) {
+      var head = sessionPages.length > 1 ? '===== zdjęcie ' + (i + 1) + ' =====\n' : '';
+      parts.push(head + p.texts.join('\n===== drugi odczyt =====\n'));
+    });
+    $('raw').textContent = parts.join('\n');
+  }
+
+  // wyniki całej porcji zdjęć – scalenie po zakończeniu batcha
+  function addPages(pages) {
+    pages.forEach(function (p) { sessionPages.push(p); });
+    sessionPhotos = sessionPages.length;
+    mergePages();
+    renderRaw();
     renderResults();
+  }
+
+  function showResults(text, extraText) {
+    lastText = text;
+    var results = Matcher.solve(text, index).results;
+    var texts = [text];
+    if (extraText) {
+      texts.push(extraText);
+      results = results.concat(Matcher.solve(extraText, index).results);
+    }
+    addPages([{ texts: texts, results: results }]);
     $('out').scrollIntoView({ behavior: 'smooth' });
   }
 
@@ -2467,8 +2620,9 @@ else if (typeof exports === 'object')
   /* ---------- zdarzenia ---------- */
   $('cam').addEventListener('change', function (e) { setBatch(e.target.files); e.target.value = ''; });
   $('gal').addEventListener('change', function (e) { setBatch(e.target.files); e.target.value = ''; });
-  $('rotL').addEventListener('click', function () { rotation -= 90; drawPreview(); });
-  $('rotR').addEventListener('click', function () { rotation += 90; drawPreview(); });
+  // bez podglądu: obrót od razu uruchamia rozpoznanie jeszcze raz
+  $('rotL').addEventListener('click', function () { rotation -= 90; recognize(); });
+  $('rotR').addEventListener('click', function () { rotation += 90; recognize(); });
   $('go').addEventListener('click', recognize);
   $('clearResults').addEventListener('click', function () {
     clearSession();
@@ -2495,7 +2649,25 @@ else if (typeof exports === 'object')
     sessionResults: sessionList,
     active: function () { return activeTest; },
     list: function () { return tests; },
-    importResult: function () { return importResult; }
+    importResult: function () { return importResult; },
+    // diagnostyka: OCR obrazka w wybranym trybie ('raw' | 'gray' | 'enhance')
+    ocrImage: async function (blob, mode, opts) {
+      opts = opts || {};
+      if (srcBitmap && typeof srcBitmap.close === 'function') srcBitmap.close();
+      srcBitmap = await fileToBitmap(blob);
+      var c = renderCanvas(opts.maxSide || 2600, opts.maxScale);
+      if (mode === 'enhance') c = enhance(c);
+      else if (mode === 'gray') c = grayscale(c);
+      var b2 = await new Promise(function (r) { c.toBlob(r, 'image/png'); });
+      var w = await getWorker();
+      var params = {};
+      if (opts.dpi !== undefined) params.user_defined_dpi = String(opts.dpi);
+      if (opts.psm !== undefined) params.tessedit_pageseg_mode = String(opts.psm);
+      if (Object.keys(params).length) await w.setParameters(params);
+      var res = await w.recognize(b2);
+      await w.terminate(); workerP = null; workerReady = false; progressCb = null;
+      return res.data.text;
+    }
   };
 })();
 </script>
