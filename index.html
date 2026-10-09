@@ -1219,7 +1219,21 @@ else if (typeof exports === 'object')
     // treść, która po prostu nie przypomina poprawnej odpowiedzi, dedukcja
     // jest słaba (zgadliśmy źle sparowany OCR) — nie wolno dać conf 'ok'
     var posSlotLen = posInferred && pas[letterIdx] && pas[letterIdx].s ? pas[letterIdx].s.length : 0;
-    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, optMargin: optMargin, inferred: inferred, posInferred: posInferred, posSlotLen: posSlotLen };
+    // czy kolejność odpowiedzi na zdjęciu = kolejność w bazie: co najmniej
+    // jedna pewna para musi stać na swojej pozycji i żadna na cudzej —
+    // dopiero wtedy wolno ufać literze z klucza bazy (arkusz może tasować
+    // kolejność odpowiedzi, wtedy litera z bazy wskazywałaby złą pozycję)
+    var samePos = 0, diffPos = 0;
+    if (asg) {
+      for (var sp = 0; sp < pas.length; sp++) {
+        var mj2 = asg.map[sp];
+        if (mj2 >= 0 && asg.S[sp][mj2] >= 0.5) {
+          if (mj2 === sp) samePos++; else diffPos++;
+        }
+      }
+    }
+    var orderVerified = samePos >= 1 && diffPos === 0;
+    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, optMargin: optMargin, inferred: inferred, posInferred: posInferred, posSlotLen: posSlotLen, orderVerified: orderVerified };
   }
 
   function matchBlock(block, index) {
@@ -1267,10 +1281,9 @@ else if (typeof exports === 'object')
       // gdy samo pytanie albo zestaw odpowiedzi dopasowane są pewnie, litera
       // z klucza bazy jest lepszą wskazówką niż brak — ale flagujemy ją jako
       // nieweryfikowaną treścią (keyFallback)
-      if (best.sq >= 0.7 || (best.sq >= 0.55 && best.sa >= 0.6)) {
-        // zawsze 'low': gdyby kolejność odpowiedzi na arkuszu różniła się od
-        // bazy, litera z klucza byłaby błędna — nieweryfikowana kopia klucza
-        // nie może być pewna
+      if (best.orderVerified && !best.item.img && (best.sq >= 0.7 || (best.sq >= 0.55 && best.sa >= 0.6))) {
+        // zawsze 'low' + orderVerified: litera z klucza jest wiarygodna tylko
+        // gdy zdjęcie potwierdziło, że kolejność odpowiedzi = kolejność z bazy
         out.letter = LETTERS[best.item.c];
         out.conf = 'low';
         out.keyFallback = true;
@@ -1291,6 +1304,15 @@ else if (typeof exports === 'object')
     out.letter = LETTERS[best.letterIdx] || '?';
     out.optSim = best.optSim;
     out.alts = alts.map(function (x) { return LETTERS[x]; });
+
+    if (best.item.img && alts.length) {
+      // pytania obrazkowe występują w wariantach o identycznej treści, ale
+      // różnych kluczach — OCR nie widzi rysunku, więc gdy zestawy odpowiedzi
+      // nie rozstrzygają wariantu jednoznacznie, litera jest zgadywaniem
+      out.letter = null;
+      out.conf = best.total >= 0.4 ? 'low' : 'none';
+      return out;
+    }
 
     // litera zgadnięta pozycyjnie (etykieta nieczytelna w OCR) = niepewne
     var letterGuessed = block.orphanSlots && block.orphanSlots[best.letterIdx];

@@ -1,5 +1,5 @@
 // Service worker aplikacji Poprawczak – cache-first, wszystko działa offline.
-var CACHE = 'poprawczak-v10';
+var CACHE = 'poprawczak-v11';
 var ASSETS = [
   './',
   './index.html',
