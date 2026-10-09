@@ -2,6 +2,7 @@
   "name": "Poprawczak",
   "short_name": "Poprawczak",
   "description": "Odczytuje odpowiedzi ze zdjęcia kartki z testem. Działa offline.",
+  "id": "./",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
