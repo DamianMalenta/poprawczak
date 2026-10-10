@@ -719,8 +719,10 @@ else if (typeof exports === 'object')
  * Najważniejsze założenia:
  *  - numery pytań ze zdjęcia NIE są używane do szukania w bazie (służą tylko do etykiet w wyniku),
  *  - pytanie jest rozpoznawane po TREŚCI (rozmyte dopasowanie odporne na błędy OCR)
- *    oraz po treści odpowiedzi (kolejność odpowiedzi na zdjęciu może być inna niż w bazie),
- *  - litera wyniku to litera tej opcji NA ZDJĘCIU, której treść odpowiada poprawnej odpowiedzi z bazy.
+ *    oraz po treści odpowiedzi,
+ *  - litera wyniku to litera klucza z bazy (LETTERS[rekord.c]) — kolejność
+ *    odpowiedzi na arkuszu = kolejność w bazie; pozycja poprawnej treści na
+ *    zdjęciu służy już tylko do walidacji krzyżowej dopasowania.
  *
  * Moduł działa zarówno w przeglądarce (window.Matcher) jak i w Node (require).
  */
@@ -1162,78 +1164,24 @@ else if (typeof exports === 'object')
     // przewaga odpowiedzi (0.6) nad treścią pytania (0.4)
     var total = hasQ && hasA ? 0.4 * sq + 0.6 * sa : hasQ ? sq : sa;
 
-    var letterIdx = -1, optSim = 0, optMargin = 0, inferred = false;
+    // pozycja poprawnej odpowiedzi NA ZDJĘCIU — nie jest już źródłem litery,
+    // tylko walidacją krzyżową: kolejność arkusza = kolejność bazy, więc para
+    // poprawnej treści na obcej pozycji sugeruje tasowanie albo zły rekord
+    var letterIdx = -1;
     if (asg) {
       var idx = asg.map.indexOf(item.c);
-      if (idx >= 0) { letterIdx = idx; optSim = asg.S[idx][item.c]; }
+      if (idx >= 0 && asg.S[idx][item.c] >= 0.4) letterIdx = idx;
     }
-    if (letterIdx < 0 || optSim < 0.75) {
-      letterIdx = -1;
-      optSim = 0;
+    if (letterIdx < 0) {
+      var optSim = 0;
       for (var i = 0; i < pas.length; i++) {
         if (!pas[i].s) continue;
         var s = sim(pas[i], item.pa[item.c]);
         if (s > optSim) { optSim = s; letterIdx = i; }
       }
-      inferred = optSim < 0.75;
+      if (optSim < 0.4) letterIdx = -1;
     }
-    var second = 0;
-    for (var oi = 0; oi < pas.length; oi++) {
-      if (oi === letterIdx || !pas[oi].s) continue;
-      var os = sim(pas[oi], item.pa[item.c]);
-      if (os > second) second = os;
-    }
-    optMargin = optSim - second;
-    if (letterIdx >= item.a.length) {
-      var cnt = 0;
-      for (var si = 0; si < letterIdx; si++) if (pas[si].s) cnt++;
-      letterIdx = cnt;
-      inferred = true;
-    }
-    var observed = pas.filter(function (p) { return p.s; }).length;
-    if (letterIdx < 0 || letterIdx >= item.a.length || optSim < 0.4 || optMargin < 0.03 ||
-        (observed < item.a.length && optSim < 0.88)) letterIdx = -1;
-
-    // Inferencja pozycyjna: pytanie jest rozpoznane, ale treść poprawnej
-    // odpowiedzi zaginęła w OCR. Jeśli brakuje DOKŁADNIE jednej pozycji na
-    // zdjęciu i właśnie poprawna odpowiedź z bazy nie dostała pary — litera
-    // to ta brakująca pozycja (etykieta na zdjęciu, niezależnie od kolejności).
-    var posInferred = false;
-    if (letterIdx < 0 && asg) {
-      var n = item.a.length;
-      var usedDb = new Array(n);
-      var freeSlots = [];
-      for (var s2 = 0; s2 < n; s2++) {
-        var mj = s2 < pas.length ? asg.map[s2] : -1;
-        if (mj >= 0 && asg.S[s2][mj] >= 0.5) usedDb[mj] = true;   // pewna para
-        else freeSlots.push(s2);                                 // wolna pozycja
-      }
-      var onlyCorrectMissing = !usedDb[item.c];
-      for (var di = 0; di < n; di++) if (!usedDb[di] && di !== item.c) onlyCorrectMissing = false;
-      if (freeSlots.length === 1 && onlyCorrectMissing) {
-        letterIdx = freeSlots[0];
-        posInferred = true;
-      }
-    }
-    // długość tekstu w slocie wytypowanym pozycyjnie: gdy slot ma normalną
-    // treść, która po prostu nie przypomina poprawnej odpowiedzi, dedukcja
-    // jest słaba (zgadliśmy źle sparowany OCR) — nie wolno dać conf 'ok'
-    var posSlotLen = posInferred && pas[letterIdx] && pas[letterIdx].s ? pas[letterIdx].s.length : 0;
-    // czy kolejność odpowiedzi na zdjęciu = kolejność w bazie: co najmniej
-    // jedna pewna para musi stać na swojej pozycji i żadna na cudzej —
-    // dopiero wtedy wolno ufać literze z klucza bazy (arkusz może tasować
-    // kolejność odpowiedzi, wtedy litera z bazy wskazywałaby złą pozycję)
-    var samePos = 0, diffPos = 0;
-    if (asg) {
-      for (var sp = 0; sp < pas.length; sp++) {
-        var mj2 = asg.map[sp];
-        if (mj2 >= 0 && asg.S[sp][mj2] >= 0.5) {
-          if (mj2 === sp) samePos++; else diffPos++;
-        }
-      }
-    }
-    var orderVerified = samePos >= 1 && diffPos === 0;
-    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx, optSim: optSim, optMargin: optMargin, inferred: inferred, posInferred: posInferred, posSlotLen: posSlotLen, orderVerified: orderVerified };
+    return { item: item, total: total, sq: sq, sa: sa, letterIdx: letterIdx };
   }
 
   function matchBlock(block, index) {
@@ -1241,7 +1189,7 @@ else if (typeof exports === 'object')
     var pas = block.answers.slice(0, 6).map(function (a) { return profile(norm(a)); });
     var hasQ = pq.s.length >= 8;
     var hasA = pas.filter(function (p) { return p.s; }).length >= 2;
-    var out = { num: block.num, real: !!block.real, dbId: null, letter: null, conf: 'none', total: 0, optSim: 0, match: null, correct: null, alts: [] };
+    var out = { num: block.num, real: !!block.real, dbId: null, letter: null, conf: 'none', total: 0, match: null, correct: null, alts: [] };
     if (!hasQ && !hasA) return out;
 
     // ranking wstępny po WSZYSTKICH pytaniach bazy: przewaga odpowiedzi (saF),
@@ -1275,59 +1223,41 @@ else if (typeof exports === 'object')
       out.correct = best.item.a[best.item.c];
     }
     out.total = best.total;
-    if (best.letterIdx < 0) {
-      // treść poprawnej odpowiedzi nie zweryfikowała żadnej litery (zmiażdżony
-      // OCR opcji). Na egzaminie kolejność odpowiedzi = kolejność z bazy, więc
-      // gdy samo pytanie albo zestaw odpowiedzi dopasowane są pewnie, litera
-      // z klucza bazy jest lepszą wskazówką niż brak — ale flagujemy ją jako
-      // nieweryfikowaną treścią (keyFallback)
-      if (best.orderVerified && !best.item.img && (best.sq >= 0.7 || (best.sq >= 0.55 && best.sa >= 0.6))) {
-        // zawsze 'low' + orderVerified: litera z klucza jest wiarygodna tylko
-        // gdy zdjęcie potwierdziło, że kolejność odpowiedzi = kolejność z bazy
-        out.letter = LETTERS[best.item.c];
-        out.conf = 'low';
-        out.keyFallback = true;
-      }
-      return out;
+
+    // przewaga nad najlepszym kandydatem z INNYM kluczem c — rekordy o tym
+    // samym kluczu dają tę samą literę, więc nie stanowią konfliktu
+    var margin = Infinity;
+    for (var i = 1; i < evals.length; i++) {
+      if (evals[i].item.c !== best.item.c) { margin = best.total - evals[i].total; break; }
     }
 
-    // inne pytania o niemal tym samym wyniku, ale z inną literą => niejednoznaczne
-    var alts = [];
+    // kandydaci w konflikcie: niemal ta sama punktacja, inny klucz => litera
+    // byłaby zgadywaniem (pytania img o identycznej treści 'q' i różnych
+    // kluczach, np. rekordy 83–93 — rozstrzyga je 'sa' po tekstach opcji)
+    var tied = [];
     for (var i = 1; i < evals.length; i++) {
       var e = evals[i];
-      if (e.total < best.total - 0.03) break;
-      if (e.letterIdx !== best.letterIdx && e.letterIdx >= 0) {
-        if (alts.indexOf(e.letterIdx) < 0) alts.push(e.letterIdx);
-      }
+      if (e.total < best.total - 0.05) break;
+      if (e.item.c !== best.item.c && tied.indexOf(e.item.c) < 0) tied.push(e.item.c);
     }
-
-    out.letter = LETTERS[best.letterIdx] || '?';
-    out.optSim = best.optSim;
-    out.alts = alts.map(function (x) { return LETTERS[x]; });
-
-    if (best.item.img && alts.length) {
-      // pytania obrazkowe występują w wariantach o identycznej treści, ale
-      // różnych kluczach — OCR nie widzi rysunku, więc gdy zestawy odpowiedzi
-      // nie rozstrzygają wariantu jednoznacznie, litera jest zgadywaniem
-      out.letter = null;
+    if (tied.length) {
+      out.alts = [best.item.c].concat(tied).map(function (x) { return LETTERS[x]; });
       out.conf = best.total >= 0.4 ? 'low' : 'none';
-      return out;
+      return out;                                        // letter = null -> „?"
     }
 
-    // litera zgadnięta pozycyjnie (etykieta nieczytelna w OCR) = niepewne
-    var letterGuessed = block.orphanSlots && block.orphanSlots[best.letterIdx];
+    if (best.total < 0.4) return out;                    // conf 'none'
 
-    if (alts.length || letterGuessed) out.conf = best.total >= 0.4 ? 'low' : 'none';
-    else if (best.posInferred) {
-      // pytanie rozpoznane pewnie + brakująca pozycja = poprawna odpowiedź;
-      // conf 'ok' tylko gdy wolny slot jest pusty/śmieciowy (tekst naprawdę
-      // zaginął w OCR) — jeśli tam jest czytelny niepasujący tekst, to zgadywanie
-      out.conf = (best.posSlotLen < 8 && best.total >= 0.62 && best.sa >= 0.55) ? 'ok' : (best.total >= 0.4 ? 'low' : 'none');
+    // litera zawsze z klucza bazy — kolejność odpowiedzi na arkuszu = w bazie
+    out.letter = LETTERS[best.item.c];
+    out.conf = (best.total >= 0.62 && best.sq >= 0.55 && margin >= 0.08) ? 'ok' : 'low';
+
+    // walidacja krzyżowa: nie nadpisuje litery, tylko obniża conf
+    if (hasA && best.sa < 0.3) out.conf = 'low';         // opcje na zdjęciu nie pasują do rekordu
+    if (best.letterIdx >= 0 && best.letterIdx !== best.item.c) {
+      out.conf = 'low';                                // poprawna treść na obcej pozycji
+      out.conflict = true;
     }
-    else if (best.inferred) out.conf = best.total >= 0.4 ? 'low' : 'none';
-    else if (best.total >= 0.62 && best.optSim >= 0.5) out.conf = 'ok';
-    else if (best.total >= 0.4) out.conf = 'low';
-    else { out.conf = 'none'; }
     return out;
   }
 
@@ -2509,16 +2439,12 @@ else if (typeof exports === 'object')
     if (!choices.length) sel = entry.none;
     else if (choices.length === 1) sel = choices[0];
     else {
-      // sprzeczne litery z różnych zdjęć/odczytów: nie pozwalamy rangi conf
-      // wygrywać z wyraźnie wyższym total — bierzemy lepszy wynik, ale
-      // degradujemy go do 'low' i oznaczamy konflikt zamiast pewnego błędu
+      // sprzeczne litery z różnych zdjęć/odczytów: NIGDY 'ok' — bierzemy
+      // najlepszy wynik po total, degradujemy do 'low' i oznaczamy konflikt
       var byTotal = choices.slice().sort(function (a, b) { return b.total - a.total; });
-      if (resultRank(byTotal[0]) >= resultRank(byTotal[1]) && byTotal[0].total >= byTotal[1].total + 0.15) sel = byTotal[0];
-      else {
-        sel = Object.assign({}, byTotal[0]);
-        sel.conf = 'low';
-        sel.conflict = true;
-      }
+      sel = Object.assign({}, byTotal[0]);
+      if (sel.conf === 'ok') sel.conf = 'low';
+      sel.conflict = true;
     }
     // fragment bez numeru (ucięty brzeg kadru) dziedziczy numer arkusza,
     // gdy inny odczyt tego samego pytania z bazy miał czytelny numer
@@ -2576,7 +2502,6 @@ else if (typeof exports === 'object')
       it.className = 'item ' + cls;
       it.innerHTML = '<b class="n">' + esc(label) + '</b> <span class="hint">(dopasowanie ' + Math.round(r.total * 100) + '%)</span><br>' +
         (r.conflict ? '<span class="hint">Sprzeczne wyniki z kilku zdjęć.</span><br>' : '') +
-        (r.keyFallback ? '<span class="hint">Litera z klucza bazy — treść odpowiedzi na zdjęciu nieczytelna.</span><br>' : '') +
         '<i>Na zdjęciu:</i> ' + esc((r.ocrQuestion || '').slice(0, 140)) + '<br>' +
         (r.match ? '<i>W bazie:</i> ' + esc(r.match.slice(0, 140)) + '<br><span class="c">Poprawna: ' + esc(r.correct) + '</span>' : '<i>brak dopasowania</i>');
       det.appendChild(it);
